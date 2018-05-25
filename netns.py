@@ -89,7 +89,6 @@ def get_ns_path(nspath=None, nsname=None, nspid=None):
 
     return nspath
 
-
 class NetNS (object):
     '''A context manager for running code inside a network namespace.
 
@@ -104,13 +103,13 @@ class NetNS (object):
         self.targetpath = get_ns_path(nspath,
                                       nsname=nsname,
                                       nspid=nspid)
+        if not self.targetpath:
+            raise ValueError('invalid namespace')
+
         self.resolvconf = resolvconf
         if self.resolvconf is None and nsname:
             self.resolvconf = '/etc/netns/{}/resolv.conf'.format(nsname)
         logger.info('Resolvconf path: {}'.format(self.resolvconf))
-
-        if not self.targetpath:
-            raise ValueError('invalid namespace')
 
     def __enter__(self):
         # https://unix.stackexchange.com/a/443919
@@ -125,6 +124,5 @@ class NetNS (object):
             setns(fd, CLONE_NEWNET)
 
     def __exit__(self, *args):
-        #unmount_resolvconf()
         setns(self.myns, CLONE_NEWNET)
         self.myns.close()
