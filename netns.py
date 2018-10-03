@@ -16,6 +16,13 @@ MS_BIND = 4096
 MS_REC = 16384
 MS_SLAVE = 1 << 19
 
+NETNS_CREATE_SCRIPT = os.path.join(
+        os.path.dirname(os.path.realpath(__file__)),
+        'create_netns.sh')
+NETNS_DESTROY_SCRIPT = os.path.join(
+        os.path.dirname(os.path.realpath(__file__)),
+        'destroy_netns.sh')
+
 logger = logging.getLogger()
 
 def errcheck(ret, func, args):
@@ -26,22 +33,16 @@ def errcheck(ret, func, args):
 libc = CDLL('libc.so.6', use_errno=True)
 libc.setns.errcheck = errcheck
 
-def unshare(nstype):
-    return libc.unshare(nstype)
-
-def edit_resolvconf(path):
-    unshare(CLONE_NEWNS)
-    make_mount_private()
-    mount_resolvconf(path)
-
-def make_mount_private():
-    return libc.mount('', '/', '', MS_REC|MS_SLAVE, None)
-
 def mount_resolvconf(path):
-    return libc.mount(path, '/etc/resolv.conf', '', MS_BIND, None)
+    if path is None:
+        return
+    libc.unshare(CLONE_NEWNS)
+    # Make our new mount namespace private
+    libc.mount('', '/', '', MS_REC|MS_SLAVE, None)
+    libc.mount(path, '/etc/resolv.conf', '', MS_BIND, None)
 
 def unmount_resolvconf():
-    return libc.umount('/etc/resolv.conf')
+    libc.umount('/etc/resolv.conf')
 
 def setns(fd, nstype):
     '''Change the network namespace of the calling thread.
@@ -89,6 +90,18 @@ def get_ns_path(nspath=None, nsname=None, nspid=None):
 
     return nspath
 
+def create_netns():
+    completed = subprocess.check_output([NETNS_CREATE_SCRIPT])
+    name = completed.decode('utf8').strip()
+    logger.info('Created netns: "{}"'.format(name))
+    return name
+
+def destroy_netns(name):
+    completed = subprocess.check_output([NETNS_DESTROY_SCRIPT, name])
+    name = completed.decode('utf8').strip()
+    logger.info('Destroyed netns: "{}"'.format(name))
+    return name
+
 class NetNS (object):
     '''A context manager for running code inside a network namespace.
 
@@ -99,30 +112,63 @@ class NetNS (object):
     '''
 
     def __init__(self, nsname=None, nspath=None, nspid=None, resolvconf=None):
-        self.mypath = get_ns_path(nspid=os.getpid())
-        self.targetpath = get_ns_path(nspath,
-                                      nsname=nsname,
-                                      nspid=nspid)
-        if not self.targetpath:
-            raise ValueError('invalid namespace')
-
+        self.nsname = nsname
+        self.nspath = nspath
+        self.nspid = nspid
         self.resolvconf = resolvconf
-        if self.resolvconf is None and nsname:
-            self.resolvconf = '/etc/netns/{}/resolv.conf'.format(nsname)
-        logger.info('Resolvconf path: {}'.format(self.resolvconf))
 
-    def __enter__(self):
-        # https://unix.stackexchange.com/a/443919
-        # https://unix.stackexchange.com/a/246468
-        edit_resolvconf(self.resolvconf)
+        self.my_net_ns = None
+        self.my_mnt_ns = None
+
+        self.my_net_path = get_ns_path(nspid=os.getpid())
+        self.my_mnt_path = get_ns_path(nspid=os.getpid()).replace('/net', '/mnt')
+
+        self.created_netns = False
+
+
+    def open(self):
+        # If we don't have a namespace we're supposed to enter, create a new
+        # one.
+        if self.nsname is None and self.nspath is None and self.nspid is None:
+            self.nsname = create_netns()
+            self.created_netns = self.nsname
+
+        self.target_net_path = get_ns_path(
+                nspath=self.nspath,
+                nsname=self.nsname,
+                nspid=self.nspid)
+
+        if not self.target_net_path:
+            raise ValueError('invalid namespace')
 
         # before entering a new namespace, we open a file descriptor
         # in the current namespace that we will use to restore
-        # our namespace on exit.
-        self.myns = open(self.mypath)
-        with open(self.targetpath) as fd:
-            setns(fd, CLONE_NEWNET)
+        # our namespaces on exit.
+        self.my_net_ns = open(self.my_net_path)
+        self.my_mnt_ns = open(self.my_mnt_path)
+
+        # https://unix.stackexchange.com/a/443919
+        # https://unix.stackexchange.com/a/246468
+        if self.resolvconf is None and self.nsname:
+            self.resolvconf = '/etc/netns/{}/resolv.conf'.format(self.nsname)
+            logger.info('Resolvconf path: {}'.format(self.resolvconf))
+        mount_resolvconf(self.resolvconf)
+
+        self.target_net_ns = open(self.target_net_path)
+        setns(self.target_net_ns, CLONE_NEWNET)
+
+    def close(self):
+        if self.my_net_ns:
+            setns(self.my_net_ns, CLONE_NEWNET)
+            self.my_net_ns.close()
+        if self.my_mnt_ns:
+            setns(self.my_mnt_ns, CLONE_NEWNS)
+            self.my_mnt_ns.close()
+        if self.created_netns:
+            destroy_netns(self.created_netns)
+
+    def __enter__(self):
+        self.open()
 
     def __exit__(self, *args):
-        setns(self.myns, CLONE_NEWNET)
-        self.myns.close()
+        self.close()
