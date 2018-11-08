@@ -6,12 +6,7 @@ ext_interface=`route | grep '^default' | grep -o '[^ ]*$'`
 # Find the most recently created network namespace
 # From https://stackoverflow.com/a/246128
 dir=`dirname "$(readlink -f "$0")"`
-highest_vpn=`$dir/find_recent_netns.sh`
-if [ "$highest_vpn" = "" ]; then
-  new_vpn=0
-else
-  new_vpn=$((highest_vpn + 1))
-fi
+new_vpn=`$dir/find_avail_netns.sh`
 
 ns="vpn${new_vpn}"
 interface_outside_ns="veth$(($new_vpn * 2))"
