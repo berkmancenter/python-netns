@@ -1,6 +1,6 @@
 import unittest, subprocess, os, logging, urllib, time
 
-logging.basicConfig(level=logging.WARNING)
+logging.basicConfig(level=logging.DEBUG)
 
 import netns
 

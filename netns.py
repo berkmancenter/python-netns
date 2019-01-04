@@ -1,4 +1,4 @@
-import os, subprocess, logging
+import os, subprocess, logging, time
 import socket as socket_module
 
 # Python doesn't expose the `setns()` function manually, so
@@ -6,9 +6,7 @@ import socket as socket_module
 from ctypes import CDLL, get_errno
 
 # https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/unix/sysv/linux/bits/sched.h;h=34f27a7d9b9f49d4be826f89234cf0fe45c95c8f;hb=HEAD
-CLONE_NEWIPC = 0x08000000
 CLONE_NEWNET = 0x40000000
-CLONE_NEWUTS = 0x04000000
 CLONE_NEWNS  = 0x00020000
 
 # https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/unix/sysv/linux/sys/mount.h;h=ce2838e3a79caf1f49c9aceacb143ff5e403e50e;hb=HEAD
@@ -32,17 +30,19 @@ def errcheck(ret, func, args):
 
 libc = CDLL('libc.so.6', use_errno=True)
 libc.setns.errcheck = errcheck
+libc.umount.errcheck = errcheck
 
 def mount_resolvconf(path):
     if path is None:
         return
     libc.unshare(CLONE_NEWNS)
     # Make our new mount namespace private
+    # http://man7.org/linux/man-pages/man7/mount_namespaces.7.html
     libc.mount('', '/', '', MS_REC|MS_SLAVE, None)
-    libc.mount(path, '/etc/resolv.conf', '', MS_BIND, None)
+    libc.mount(path, '/run/resolvconf/resolv.conf', '', MS_BIND, None)
 
 def unmount_resolvconf():
-    libc.umount('/etc/resolv.conf')
+    libc.umount('/run/resolvconf/resolv.conf')
 
 def setns(fd, nstype):
     '''Change the network namespace of the calling thread.
@@ -162,13 +162,25 @@ class NetNS (object):
             setns(self.my_net_ns, CLONE_NEWNET)
             self.my_net_ns.close()
         if self.my_mnt_ns:
-            setns(self.my_mnt_ns, CLONE_NEWNS)
+            try:
+                unmount_resolvconf()
+                #logger.info('Sleep pid: {}'.format(os.getpid()))
+                #time.sleep(60)
+                # This isn't going to work in a multi-threaded context:
+                # https://stackoverflow.com/a/25707007
+                #setns(self.my_mnt_ns, CLONE_NEWNS)
+            except Exception as e:
+                logger.warn(e)
             self.my_mnt_ns.close()
+        #self.destroy()
+
+    def destroy(self):
         if self.created_netns:
             destroy_netns(self.created_netns)
 
     def __enter__(self):
         self.open()
+        return self
 
     def __exit__(self, *args):
         self.close()
