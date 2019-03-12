@@ -172,7 +172,7 @@ class NetNS (object):
             except Exception as e:
                 logger.warn(e)
             self.my_mnt_ns.close()
-        #self.destroy()
+        self.destroy()
 
     def destroy(self):
         if self.created_netns:
